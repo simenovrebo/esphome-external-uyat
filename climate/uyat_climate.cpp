@@ -67,8 +67,26 @@ void UyatClimate::setup() {
   }
   if (this->eco_id_.has_value()) {
     this->parent_->register_listener(*this->eco_id_, [this](const UyatDatapoint &datapoint) {
-      this->eco_ = datapoint.value_bool;
-      ESP_LOGV(TAG, "MCU reported eco is: %s", ONOFF(this->eco_));
+      if (this->eco_id_type_ != datapoint.type)
+      {
+        ESP_LOGW(TAG, "MCU reported different dpid type for eco!");
+      }
+      this->eco_id_type_ = datapoint.type;
+      if (datapoint.type == UyatDatapointType::BOOLEAN)
+      {
+        this->eco_value_ = datapoint.value_bool;
+      }
+      else
+      if (datapoint.type == UyatDatapointType::ENUM)
+      {
+        this->eco_value_ = datapoint.value_enum;
+      }
+      else
+      if (datapoint.type == UyatDatapointType::INTEGER)
+      {
+        this->eco_value_ = datapoint.value_uint;
+      }
+      ESP_LOGV(TAG, "MCU reported eco is: %u", this->eco_value_);
       this->compute_preset_();
       this->compute_target_temperature_();
       this->publish_state();
@@ -174,9 +192,26 @@ void UyatClimate::control(const climate::ClimateCall &call) {
   if (call.get_preset().has_value()) {
     const climate::ClimatePreset preset = *call.get_preset();
     if (this->eco_id_.has_value()) {
-      const bool eco = preset == climate::CLIMATE_PRESET_ECO;
-      ESP_LOGV(TAG, "Setting eco: %s", ONOFF(eco));
-      this->parent_->set_boolean_datapoint_value(*this->eco_id_, eco);
+      auto ecoPresetValue = getEcoDpValueForPreset(preset);
+      if (ecoPresetValue)
+      {
+        ESP_LOGV(TAG, "Setting eco: %u", *ecoPresetValue);
+        if (this->eco_id_type_ == UyatDatapointType::BOOLEAN)
+        {
+           this->parent_->set_boolean_datapoint_value(*this->eco_id_, *ecoPresetValue);
+        }
+        else
+        if (this->eco_id_type_ == UyatDatapointType::ENUM)
+        {
+           this->parent_->set_enum_datapoint_value(*this->eco_id_, *ecoPresetValue);
+        }
+        else
+        if (this->eco_id_type_ == UyatDatapointType::INTEGER)
+        {
+           this->parent_->set_integer_datapoint_value(*this->eco_id_, *ecoPresetValue);
+        }
+        else {}
+      }
     }
     if (this->sleep_id_.has_value()) {
       const bool sleep = preset == climate::CLIMATE_PRESET_SLEEP;
@@ -294,7 +329,14 @@ climate::ClimateTraits UyatClimate::traits() {
   if (this->active_state_fanonly_value_.has_value())
     traits.add_supported_mode(climate::CLIMATE_MODE_FAN_ONLY);
   if (this->eco_id_.has_value()) {
-    traits.add_supported_preset(climate::CLIMATE_PRESET_ECO);
+    if (getEcoDpValueForPreset(climate::CLIMATE_PRESET_ECO))
+    {
+      traits.add_supported_preset(climate::CLIMATE_PRESET_ECO);
+    }
+    if (getEcoDpValueForPreset(climate::CLIMATE_PRESET_BOOST))
+    {
+      traits.add_supported_preset(climate::CLIMATE_PRESET_BOOST);
+    }
   }
   if (this->sleep_id_.has_value()) {
     traits.add_supported_preset(climate::CLIMATE_PRESET_SLEEP);
@@ -349,7 +391,7 @@ void UyatClimate::dump_config() {
   LOG_PIN("  Heating State Pin: ", this->heating_state_pin_);
   LOG_PIN("  Cooling State Pin: ", this->cooling_state_pin_);
   if (this->eco_id_.has_value()) {
-    ESP_LOGCONFIG(TAG, "  Eco has datapoint ID %u", *this->eco_id_);
+    ESP_LOGCONFIG(TAG, "  Eco has datapoint ID %u, type %d", *this->eco_id_, this->eco_id_type_);
   }
   if (this->sleep_id_.has_value()) {
     ESP_LOGCONFIG(TAG, "  Sleep has datapoint ID %u", *this->sleep_id_);
@@ -363,7 +405,7 @@ void UyatClimate::dump_config() {
 }
 
 void UyatClimate::compute_preset_() {
-  if (this->eco_) {
+  if (getPresetForEcoValue(this->eco_value_)) {
     this->preset = climate::CLIMATE_PRESET_ECO;
   } else if (this->sleep_) {
     this->preset = climate::CLIMATE_PRESET_SLEEP;
@@ -402,7 +444,7 @@ void UyatClimate::compute_fanmode_() {
 }
 
 void UyatClimate::compute_target_temperature_() {
-  if (this->eco_ && this->eco_temperature_.has_value()) {
+  if (this->eco_id_ && this->eco_temperature_.has_value()) {
     this->target_temperature = *this->eco_temperature_;
   } else {
     this->target_temperature = this->manual_temperature_;
@@ -486,6 +528,32 @@ void UyatClimate::compute_state_() {
 void UyatClimate::switch_to_action_(climate::ClimateAction action) {
   // For now this just sets the current action but could include triggers later
   this->action = action;
+}
+
+optional<uint32_t> UyatClimate::getEcoDpValueForPreset(climate::ClimatePreset preset) const
+{
+   for (const auto& mapping: this->eco_mapping_)
+   {
+      if (mapping.second == preset)
+      {
+        return mapping.first;
+      }
+   }
+
+   return {};
+}
+
+optional<climate::ClimatePreset> UyatClimate::getPresetForEcoValue(uint32_t value) const
+{
+   for (const auto& mapping: this->eco_mapping_)
+   {
+      if (mapping.first == value)
+      {
+        return mapping.second;
+      }
+   }
+
+   return {};
 }
 
 }  // namespace uyat

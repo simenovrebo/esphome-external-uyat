@@ -11,8 +11,10 @@ from esphome.const import (
     CONF_SWING_MODE,
     CONF_FAN_MODE,
     CONF_TEMPERATURE,
+    CONF_FROM,
+    CONF_TO,
 )
-from .. import uyat_ns, CONF_UYAT_ID, Uyat
+from .. import uyat_ns, CONF_UYAT_ID, Uyat, UyatDatapointType
 
 DEPENDENCIES = ["uyat"]
 CODEOWNERS = ["@jesserockz"]
@@ -31,6 +33,7 @@ CONF_TEMPERATURE_MULTIPLIER = "temperature_multiplier"
 CONF_CURRENT_TEMPERATURE_MULTIPLIER = "current_temperature_multiplier"
 CONF_TARGET_TEMPERATURE_MULTIPLIER = "target_temperature_multiplier"
 CONF_ECO = "eco"
+CONF_BOOST = "boost"
 CONF_SLEEP = "sleep"
 CONF_SLEEP_DATAPOINT = "sleep_datapoint"
 CONF_REPORTS_FAHRENHEIT = "reports_fahrenheit"
@@ -41,9 +44,22 @@ CONF_MEDIUM_VALUE = "medium_value"
 CONF_MIDDLE_VALUE = "middle_value"
 CONF_HIGH_VALUE = "high_value"
 CONF_AUTO_VALUE = "auto_value"
+CONF_DATAPOINT_TYPE = "datapoint_type"
+CONF_MAPPING = "mapping"
 
 UyatClimate = uyat_ns.class_("UyatClimate", climate.Climate, cg.Component)
 
+ECO_DATAPOINT_TYPES = {
+    "int": UyatDatapointType.INTEGER,
+    "uint": UyatDatapointType.INTEGER,
+    "enum": UyatDatapointType.ENUM,
+    "bool": UyatDatapointType.BOOLEAN,
+}
+
+ECO_PRESETS = [
+    CONF_ECO,
+    CONF_BOOST,
+]
 
 def validate_temperature_multipliers(value):
     if CONF_TEMPERATURE_MULTIPLIER in value:
@@ -107,6 +123,20 @@ def validate_cooling_values(value):
                 )
     return value
 
+def validate_mapping(value):
+    if isinstance(value, dict):
+        return cv.Schema(
+            {
+                cv.Required(CONF_FROM): cv.uint32_t,
+                cv.Required(CONF_TO): cv.one_of(ECO_PRESETS, lower=True),
+            }
+        )(value)
+    value = cv.string(value)
+    if "->" not in value:
+        raise cv.Invalid("Value mapping must contain '->'")
+    a, b = value.split("->", 1)
+    a, b = a.strip(), b.strip()
+    return validate_mapping({CONF_FROM: cv.uint32_t(a), CONF_TO: b})
 
 ACTIVE_STATES = cv.Schema(
     {
@@ -124,6 +154,8 @@ PRESETS = cv.Schema(
         cv.Optional(CONF_ECO): {
             cv.Required(CONF_DATAPOINT): cv.uint8_t,
             cv.Optional(CONF_TEMPERATURE): cv.temperature,
+            cv.Optional(CONF_DATAPOINT_TYPE, default="bool"): cv.enum(ECO_DATAPOINT_TYPES, lower=True),
+            cv.Optional(CONF_MAPPING): cv.ensure_list(validate_mapping),
         },
         cv.Optional(CONF_SLEEP): {
             cv.Required(CONF_DATAPOINT): cv.uint8_t,
@@ -247,7 +279,9 @@ async def to_code(config):
 
     if preset_config := config.get(CONF_PRESET, {}):
         if eco_config := preset_config.get(CONF_ECO, {}):
-            cg.add(var.set_eco_id(eco_config.get(CONF_DATAPOINT)))
+            cg.add(var.set_eco_id(eco_config.get(CONF_DATAPOINT), eco_config[CONF_DATAPOINT_TYPE]))
+            if eco_mapping := eco_config.get(CONF_MAPPING, {}):
+                cg.add(var.set_eco_mapping(eco_mapping))
             if eco_temperature := eco_config.get(CONF_TEMPERATURE):
                 cg.add(var.set_eco_temperature(eco_temperature))
         if sleep_config := preset_config.get(CONF_SLEEP, {}):
