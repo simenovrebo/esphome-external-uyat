@@ -7,7 +7,9 @@ from esphome.const import (
     CONF_MAX_VALUE,
     CONF_MIN_VALUE,
     CONF_MULTIPLY,
-    CONF_STEP
+    CONF_STEP,
+    CONF_INITIAL_VALUE,
+    CONF_RESTORE_VALUE
 )
 from .. import uyat_ns, CONF_UYAT_ID, Uyat, UyatDatapointType
 
@@ -15,10 +17,7 @@ DEPENDENCIES = ["uyat"]
 CODEOWNERS = ["@frankiboy1"]
 
 CONF_DATAPOINT_HIDDEN = "datapoint_hidden"
-CONF_DATAPOINT_HIDDEN_INIT = "init"
-CONF_DATAPOINT_HIDDEN_INIT_VALUE = "value"
 CONF_DATAPOINT_TYPE = "datapoint_type"
-
 
 UyatNumber = uyat_ns.class_("UyatNumber", number.Number, cg.Component)
 
@@ -28,9 +27,18 @@ DATAPOINT_TYPES = {
     "enum": UyatDatapointType.ENUM,
 }
 
+
 def validate_min_max(config):
-    if config[CONF_MAX_VALUE] <= config[CONF_MIN_VALUE]:
+    max_value = config[CONF_MAX_VALUE]
+    min_value = config[CONF_MIN_VALUE]
+    if max_value <= min_value:
         raise cv.Invalid("max_value must be greater than min_value")
+    if hidden_config := config.get(CONF_DATAPOINT_HIDDEN):
+        if (initial_value := hidden_config.get(CONF_INITIAL_VALUE, None)) is not None:
+            if (initial_value > max_value) or (initial_value < min_value):
+                raise cv.Invalid(
+                    f"{CONF_INITIAL_VALUE} must be a value between {CONF_MAX_VALUE} and {CONF_MIN_VALUE}"
+                )
     return config
 
 
@@ -45,15 +53,16 @@ CONFIG_SCHEMA = cv.All(
             cv.Required(CONF_STEP): cv.positive_float,
             cv.Optional(CONF_MULTIPLY, default=1.0): cv.float_,
             cv.Optional(CONF_DATAPOINT_HIDDEN): cv.All(
-                cv.Schema({
-                    cv.Required(CONF_DATAPOINT_TYPE): cv.enum(DATAPOINT_TYPES, lower=True),
-                    cv.Optional(CONF_DATAPOINT_HIDDEN_INIT): cv.All(
-                        cv.Schema({
-                            cv.Required(CONF_DATAPOINT_HIDDEN_INIT_VALUE): cv.float_
-                        })
-                    )
-                })
-            )
+                cv.Schema(
+                    {
+                        cv.Required(CONF_DATAPOINT_TYPE): cv.enum(
+                            DATAPOINT_TYPES, lower=True
+                        ),
+                        cv.Optional(CONF_INITIAL_VALUE): cv.float_,
+                        cv.Optional(CONF_RESTORE_VALUE, default=False): cv.boolean,
+                    }
+                )
+            ),
         }
     )
     .extend(cv.COMPONENT_SCHEMA),
@@ -79,5 +88,8 @@ async def to_code(config):
     cg.add(var.set_number_id(config[CONF_NUMBER_DATAPOINT]))
     if hidden_config := config.get(CONF_DATAPOINT_HIDDEN):
         cg.add(var.set_datapoint_type(hidden_config[CONF_DATAPOINT_TYPE]))
-        if hidden_init_config := hidden_config.get(CONF_DATAPOINT_HIDDEN_INIT):
-            cg.add(var.restore_datapoint_value(hidden_init_config[CONF_DATAPOINT_HIDDEN_INIT_VALUE]))
+        if (
+            hidden_init_value := hidden_config.get(CONF_INITIAL_VALUE, None)
+        ) is not None:
+            cg.add(var.set_datapoint_initial_value(hidden_init_value))
+        cg.add(var.set_restore_value(hidden_config[CONF_RESTORE_VALUE]))
