@@ -232,10 +232,14 @@ void Uyat::handle_command_(uint8_t command, uint8_t version,
     }
     break;
   case UyatCommandType::WIFI_RESET:
-    ESP_LOGE(TAG, "WIFI_RESET is not handled");
+    ESP_LOGE(TAG, "WIFI_RESET");
+    this->wifi_status_ = -1;
+    this->send_empty_command_(UyatCommandType::WIFI_RESET);
     break;
   case UyatCommandType::WIFI_SELECT:
-    ESP_LOGE(TAG, "WIFI_SELECT is not handled");
+    ESP_LOGE(TAG, "WIFI_SELECT");
+    this->wifi_status_ = -1;
+    this->send_empty_command_(UyatCommandType::WIFI_SELECT);
     break;
   case UyatCommandType::DATAPOINT_DELIVER:
     break;

@@ -105,6 +105,7 @@ class Uyat : public Component, public uart::UARTDevice {
   void force_set_string_datapoint_value(uint8_t datapoint_id, const std::string &value);
   void force_set_enum_datapoint_value(uint8_t datapoint_id, uint8_t value);
   void force_set_bitmask_datapoint_value(uint8_t datapoint_id, uint32_t value, uint8_t length);
+  void send_generic_command(const UyatCommand &command) { send_command_(command); }
   UyatInitState get_init_state();
 #ifdef USE_TIME
   void set_time_id(time::RealTimeClock *time_id) { this->time_id_ = time_id; }
