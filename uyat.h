@@ -2,6 +2,7 @@
 
 #include <cinttypes>
 #include <vector>
+#include <deque>
 
 #include "esphome/core/component.h"
 #include "esphome/core/defines.h"
@@ -118,10 +119,11 @@ class Uyat : public Component, public uart::UARTDevice {
   }
 
  protected:
-  void handle_char_(uint8_t c);
+  void handle_input_buffer_();
   void handle_datapoints_(const uint8_t *buffer, size_t len);
   optional<UyatDatapoint> get_datapoint_(uint8_t datapoint_id);
-  bool validate_message_();
+  // returns number of bytes to remove from the beginning of rx buffer
+  std::size_t validate_message_();
 
   void handle_command_(uint8_t command, uint8_t version, const uint8_t *buffer, size_t len);
   void send_raw_command_(UyatCommand command);
@@ -155,7 +157,7 @@ class Uyat : public Component, public uart::UARTDevice {
   std::string product_ = "";
   std::vector<UyatDatapointListener> listeners_;
   std::vector<UyatDatapoint> datapoints_;
-  std::vector<uint8_t> rx_message_;
+  std::deque<uint8_t> rx_message_;
   std::vector<uint8_t> ignore_mcu_update_on_datapoints_{};
   std::vector<UyatCommand> command_queue_;
   optional<UyatCommandType> expected_response_{};

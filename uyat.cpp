@@ -16,6 +16,7 @@ static const int MAX_RETRIES = 5;
 static const uint8_t NET_STATUS_WIFI_CONNECTED = 0x03;
 static const uint8_t NET_STATUS_CLOUD_CONNECTED = 0x04;
 static const uint8_t FAKE_WIFI_RSSI = 100;
+static const uint64_t UART_MAX_POLL_TIME_MS = 50;
 
 void Uyat::setup() {
   this->set_interval("heartbeat", 15000, [this] {
@@ -27,11 +28,23 @@ void Uyat::setup() {
 }
 
 void Uyat::loop() {
-  while (this->available()) {
+  const auto start_ts = millis();
+  uint64_t now = start_ts;
+  auto number_of_bytes = this->available();
+  while (number_of_bytes > 0)
+  {
     uint8_t c;
     this->read_byte(&c);
-    this->handle_char_(c);
+    this->rx_message_.push_back(c);
+    this->last_rx_char_timestamp_ = millis();
+    if (now >= (start_ts + UART_MAX_POLL_TIME_MS))
+    {
+      break;
+    }
+
+    --number_of_bytes;
   }
+  this->handle_input_buffer_();
   process_command_queue_();
 }
 
@@ -82,71 +95,73 @@ void Uyat::dump_config() {
   ESP_LOGCONFIG(TAG, "  Product: '%s'", this->product_.c_str());
 }
 
-bool Uyat::validate_message_() {
-  uint32_t at = this->rx_message_.size() - 1;
-  auto *data = &this->rx_message_[0];
-  uint8_t new_byte = data[at];
+std::size_t Uyat::validate_message_() {
 
-  // Byte 0: HEADER1 (always 0x55)
-  if (at == 0)
-    return new_byte == 0x55;
-  // Byte 1: HEADER2 (always 0xAA)
-  if (at == 1)
-    return new_byte == 0xAA;
-
-  // Byte 2: VERSION
-  // no validation for the following fields:
-  uint8_t version = data[2];
-  if (at == 2)
-    return true;
-  // Byte 3: COMMAND
-  uint8_t command = data[3];
-  if (at == 3)
-    return true;
-
-  // Byte 4: LENGTH1
-  // Byte 5: LENGTH2
-  if (at <= 5) {
-    // no validation for these fields
-    return true;
+  const auto current_size = this->rx_message_.size();
+  if (current_size < (2u + 1u + 1u + 2u + 1u)) // header + version + command + length + checksum
+  {
+    return 0u;  // don't remove anything yet
   }
 
-  uint16_t length = (uint16_t(data[4]) << 8) | (uint16_t(data[5]));
+  if (this->rx_message_.at(0u) != 0x55)
+  {
+    return 1u;
+  }
 
-  // wait until all data is read
-  if (at - 6 < length)
-    return true;
+  if (this->rx_message_.at(1u) != 0xAA)
+  {
+    return 1u;  // remove just the first 0x55, in case it is followed by another 0x55
+  }
+
+  const uint8_t version = this->rx_message_.at(2u);
+  const uint8_t command = this->rx_message_.at(3u);
+  const uint16_t length = (uint16_t(this->rx_message_.at(4u)) << 8) | (uint16_t(this->rx_message_.at(5u)));
+  const auto checksum_offset = 6u + length;
+  if ((checksum_offset + 1u) > current_size)  // offset of data field + length + checksum
+  {
+    return 0u;
+  }
 
   // Byte 6+LEN: CHECKSUM - sum of all bytes (including header) modulo 256
-  uint8_t rx_checksum = new_byte;
+  const uint8_t rx_checksum = this->rx_message_.at(checksum_offset);
   uint8_t calc_checksum = 0;
-  for (uint32_t i = 0; i < 6 + length; i++)
-    calc_checksum += data[i];
+  for (std::size_t i = 0; i < checksum_offset; ++i)
+    calc_checksum += this->rx_message_.at(i);
 
   if (rx_checksum != calc_checksum) {
-    ESP_LOGW(TAG, "Uyat Received invalid message checksum %02X!=%02X",
+    ESP_LOGW(TAG, "Received invalid message checksum %02X!=%02X",
              rx_checksum, calc_checksum);
-    return false;
+    return 1u;
   }
 
   // valid message
-  const uint8_t *message_data = data + 6;
+  std::vector<uint8_t> data(this->rx_message_.begin() + 6u, this->rx_message_.begin() + checksum_offset);
   ESP_LOGV(TAG, "Received Uyat: CMD=0x%02X VERSION=%u DATA=[%s] INIT_STATE=%u",
-           command, version, format_hex_pretty(message_data, length).c_str(),
+           command, version, format_hex_pretty(data).c_str(),
            static_cast<uint8_t>(this->init_state_));
-  this->handle_command_(command, version, message_data, length);
+  this->handle_command_(command, version, data.data(), data.size());
 
-  // return false to reset rx buffer
-  return false;
+  // the whole message can now be removed
+  return (checksum_offset + 1u);
 }
 
-void Uyat::handle_char_(uint8_t c) {
-  this->rx_message_.push_back(c);
-  if (!this->validate_message_()) {
-    this->rx_message_.clear();
-  } else {
-    this->last_rx_char_timestamp_ = millis();
-  }
+void Uyat::handle_input_buffer_() {
+  do
+  {
+    auto bytes_to_remove = this->validate_message_();
+    if (bytes_to_remove == 0)
+    {
+      break;
+    }
+    if (bytes_to_remove > this->rx_message_.size()) // just for safety, in case the validate_message_() is buggy
+    {
+      ESP_LOGW(TAG, "BUG: tryng to remove more bytes than possible %zu > %zu",
+        bytes_to_remove, this->rx_message_.size());
+      bytes_to_remove = this->rx_message_.size();
+    }
+
+    this->rx_message_.erase(this->rx_message_.begin(), this->rx_message_.begin() + bytes_to_remove);
+  } while ((this->command_queue_.empty()) && (!this->rx_message_.empty()));  // stop if there's message to be sent or no input
 }
 
 void Uyat::handle_command_(uint8_t command, uint8_t version,
